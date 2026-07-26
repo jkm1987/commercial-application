@@ -1,0 +1,1339 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zippy Supermarket - Multi-Terminal POS & Inventory System</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM CDN -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <!-- Babel standalone compiler for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+
+        @media print {
+            body * { visibility: hidden; }
+            #printable-receipt-area, #printable-receipt-area * { visibility: visible; }
+            #printable-receipt-area {
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100%;
+                background: white;
+                padding: 20px;
+                color: black;
+            }
+            .no-print { display: none !important; }
+        }
+    </style>
+</head>
+<body class="bg-slate-100 min-h-screen">
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // Base Data Generation
+        const categoriesData = {
+          "Dairy & Bakery": { adjectives: ["Organic", "Farm Fresh", "Greek", "Salted", "Unsalted"], nouns: ["Milk", "Brown Bread", "Butter", "Paneer", "Cheese"], units: ["1 L", "400 g", "500 g", "200 g"], basePrice: 50 },
+          "Fruits & Vegetables": { adjectives: ["Fresh", "Ripe", "Juicy", "Crisp", "Local"], nouns: ["Bananas", "Tomatoes", "Onions", "Potatoes", "Apples"], units: ["1 kg", "500 g", "4 pcs"], basePrice: 35 },
+          "Snacks & Drinks": { adjectives: ["Crunchy", "Spicy", "Classic", "Roasted", "Diet"], nouns: ["Potato Chips", "Cola Drink", "Almonds", "Cashews", "Green Tea"], units: ["100 g", "200 g", "1.25 L"], basePrice: 40 },
+          "Atta, Rice & Staples": { adjectives: ["Polished", "Aroma", "Chakki Fresh", "Pure", "Refined"], nouns: ["Basmati Rice", "Cooking Oil", "Atta", "Toor Dal", "Salt"], units: ["1 kg", "5 kg", "1 L"], basePrice: 90 }
+        };
+
+        const generateCatalog = () => {
+          const list = [];
+          const categoryKeys = Object.keys(categoriesData);
+          let idCounter = 1;
+          for (let i = 0; i < 60; i++) {
+            const catName = categoryKeys[i % categoryKeys.length];
+            const cat = categoriesData[catName];
+            const adj = cat.adjectives[i % cat.adjectives.length];
+            const noun = cat.nouns[Math.floor(i / cat.adjectives.length) % cat.nouns.length];
+            const unit = cat.units[i % cat.units.length];
+            const price = parseFloat((cat.basePrice + ((i * 3.7) % 150)).toFixed(2));
+            list.push({
+              id: idCounter,
+              barcode: `890${String(10000000 + idCounter).slice(1)}`,
+              name: `${adj} ${noun} ${i + 1}`,
+              category: catName,
+              unit,
+              stock: 25,
+              price,
+              mrp: parseFloat((price * 1.15).toFixed(2))
+            });
+            idCounter++;
+          }
+          return list;
+        };
+
+        const generateDummyOnlineOrders = (inv) => {
+            return Array.from({length: 3}, (_, i) => {
+                const item = inv[Math.floor(Math.random() * inv.length)];
+                const qty = Math.floor(Math.random() * 3) + 1;
+                const subtotal = item.price * qty;
+                return {
+                    id: `WEB-${Math.floor(10000 + Math.random() * 90000)}`,
+                    customerName: `Online Customer ${Math.floor(Math.random() * 1000)}`,
+                    customerMobile: `98765${Math.floor(10000 + Math.random() * 90000)}`,
+                    customerAddress: `${Math.floor(Math.random() * 100) + 1}, Tech Park Road, Bengaluru, 560001`,
+                    items: [{ ...item, qty }],
+                    subtotal: subtotal,
+                    grandTotal: subtotal * 1.05,
+                    paymentMethod: 'Prepaid (UPI)',
+                    timestamp: new Date().toLocaleTimeString(),
+                    status: 'PENDING'
+                };
+            });
+        };
+
+        const STORAGE_INV = 'zippy_multi_inv_v2';
+        const STORAGE_TX = 'zippy_multi_tx_v2';
+        const STORAGE_USERS = 'zippy_multi_users_v2';
+        const STORAGE_LOCK = 'zippy_db_mutex_lock';
+        const STORAGE_SESSIONS = 'zippy_active_sessions'; 
+        const STORAGE_ONLINE_ORDERS = 'zippy_online_orders_v2';
+
+        function ZippyApp() {
+          // Terminal Identification
+          const [terminalId, setTerminalId] = useState(() => {
+            const saved = sessionStorage.getItem('zippy_terminal_id');
+            if (saved) return saved;
+            const defaultTerm = "POS-TERM-01";
+            sessionStorage.setItem('zippy_terminal_id', defaultTerm);
+            return defaultTerm;
+          });
+
+          // Authentication State
+          const [users, setUsers] = useState(() => {
+            const saved = localStorage.getItem(STORAGE_USERS);
+            return saved ? JSON.parse(saved) : [
+              { empId: '001', name: 'Parthavi', username: 'parthavi', password: 'parthavi123', isManager: true },
+              { empId: 'EMP-1001', name: 'Jajati Cashier', username: 'jajati', password: 'jajati123', isManager: false },
+              { empId: 'EMP-1002', name: 'Gayatri Cashier', username: 'gayatri', password: 'gayatri123', isManager: false }
+            ];
+          });
+
+          const [currentUser, setCurrentUser] = useState(() => {
+            const saved = sessionStorage.getItem('zippy_active_user');
+            return saved ? JSON.parse(saved) : null;
+          });
+          
+          const [authMode, setAuthMode] = useState('login'); // 'login', 'signup', 'forgot'
+          const [loginForm, setLoginForm] = useState({ empId: '', password: '', selectedTerminal: terminalId });
+          const [signupForm, setSignupForm] = useState({ name: '', password: '' });
+          const [resetForm, setResetForm] = useState({ identifier: '', name: '', newPassword: '' });
+
+          // Navigation Portal ('pos', 'inventory', 'audit', 'online')
+          const [activePortal, setActivePortal] = useState('pos');
+          const [isManagerUnlocked, setIsManagerUnlocked] = useState(false);
+          const [showManagerModal, setShowManagerModal] = useState(false);
+          const [managerForm, setManagerForm] = useState({ username: '', password: '' });
+          
+          // Stock filter for inventory
+          const [invStockFilter, setInvStockFilter] = useState('ALL');
+
+          const [syncLog, setSyncLog] = useState([]);
+
+          // Shared Databases
+          const [inventory, setInventory] = useState(() => {
+            const saved = localStorage.getItem(STORAGE_INV);
+            return saved ? JSON.parse(saved) : generateCatalog();
+          });
+
+          const [transactions, setTransactions] = useState(() => {
+            const saved = localStorage.getItem(STORAGE_TX);
+            return saved ? JSON.parse(saved) : [];
+          });
+
+          const [onlineOrders, setOnlineOrders] = useState(() => {
+            const saved = localStorage.getItem(STORAGE_ONLINE_ORDERS);
+            return saved ? JSON.parse(saved) : generateDummyOnlineOrders(generateCatalog());
+          });
+
+          // POS State
+          const [posCart, setPosCart] = useState([]);
+          const [posSearch, setPosSearch] = useState('');
+          const [customerName, setCustomerName] = useState('');
+          const [customerMobile, setCustomerMobile] = useState('');
+          const [paymentMethod, setPaymentMethod] = useState('Cash'); 
+          const [isProcessingTx, setIsProcessingTx] = useState(false);
+
+          const [receiptModal, setReceiptModal] = useState({ isOpen: false, data: null });
+
+          const channelRef = useRef(null);
+
+          const addLog = (msg) => {
+            setSyncLog(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev.slice(0, 19)]);
+          };
+
+          useEffect(() => {
+            localStorage.setItem(STORAGE_USERS, JSON.stringify(users));
+          }, [users]);
+
+          useEffect(() => {
+            localStorage.setItem(STORAGE_INV, JSON.stringify(inventory));
+          }, [inventory]);
+
+          useEffect(() => {
+            localStorage.setItem(STORAGE_TX, JSON.stringify(transactions));
+          }, [transactions]);
+
+          useEffect(() => {
+            localStorage.setItem(STORAGE_ONLINE_ORDERS, JSON.stringify(onlineOrders));
+          }, [onlineOrders]);
+
+          // Set up WebSocket / PubSub simulation via BroadcastChannel
+          useEffect(() => {
+            const channel = new BroadcastChannel('zippy_realtime_sync');
+            channelRef.current = channel;
+
+            channel.onmessage = (event) => {
+              const { type, payload, sourceTerminal } = event.data;
+              if (type === 'STOCK_UPDATE') {
+                setInventory(payload.inventory);
+                addLog(`Sync Event: Inventory stock updated centrally by ${sourceTerminal}`);
+              } else if (type === 'NEW_TRANSACTION') {
+                setTransactions(payload.transactions);
+                setInventory(payload.inventory);
+                addLog(`Sync Event: In-Store Sale completed at ${sourceTerminal}`);
+              } else if (type === 'ONLINE_ORDER_PROCESSED') {
+                setTransactions(payload.transactions);
+                setInventory(payload.inventory);
+                setOnlineOrders(payload.onlineOrders);
+                addLog(`Sync Event: Online order processed at ${sourceTerminal}`);
+              }
+            };
+
+            const handleStorageChange = (e) => {
+              if (e.key === STORAGE_INV && e.newValue) setInventory(JSON.parse(e.newValue));
+              if (e.key === STORAGE_TX && e.newValue) setTransactions(JSON.parse(e.newValue));
+              if (e.key === STORAGE_USERS && e.newValue) setUsers(JSON.parse(e.newValue));
+              if (e.key === STORAGE_ONLINE_ORDERS && e.newValue) setOnlineOrders(JSON.parse(e.newValue));
+              if (e.key === STORAGE_SESSIONS) {
+                 const sessions = JSON.parse(e.newValue || '{}');
+                 if (currentUser && !sessions[terminalId]) {
+                    setCurrentUser(null);
+                    sessionStorage.removeItem('zippy_active_user');
+                 }
+              }
+            };
+
+            window.addEventListener('storage', handleStorageChange);
+
+            return () => {
+              channel.close();
+              window.removeEventListener('storage', handleStorageChange);
+            };
+          }, [currentUser, terminalId]);
+
+          useEffect(() => {
+             const handleUnload = () => {
+                 if (currentUser) {
+                     const activeSessions = JSON.parse(localStorage.getItem(STORAGE_SESSIONS) || '{}');
+                     delete activeSessions[terminalId];
+                     localStorage.setItem(STORAGE_SESSIONS, JSON.stringify(activeSessions));
+                 }
+             };
+             window.addEventListener('beforeunload', handleUnload);
+             return () => window.removeEventListener('beforeunload', handleUnload);
+          }, [currentUser, terminalId]);
+
+          const acquireLock = async () => {
+            let attempts = 0;
+            while (localStorage.getItem(STORAGE_LOCK) === 'LOCKED' && attempts < 20) {
+              await new Promise(r => setTimeout(r, 100));
+              attempts++;
+            }
+            if (attempts >= 20) return false;
+            localStorage.setItem(STORAGE_LOCK, 'LOCKED');
+            return true;
+          };
+
+          const releaseLock = () => {
+            localStorage.removeItem(STORAGE_LOCK);
+          };
+
+          // Auth Handlers
+          const handleSignUp = (e) => {
+            e.preventDefault();
+            if (!signupForm.name || !signupForm.password) {
+              return alert("Please fill in all details.");
+            }
+            const newEmpId = `EMP-${Math.floor(1000 + Math.random() * 9000)}`;
+            const generatedUsername = signupForm.name.toLowerCase().replace(/\s+/g, '');
+            const newUser = {
+              empId: newEmpId,
+              name: signupForm.name,
+              username: generatedUsername,
+              password: signupForm.password,
+              isManager: false
+            };
+            const updatedUsers = [...users, newUser];
+            setUsers(updatedUsers);
+            alert(`Account Created Successfully!\nYour Employee ID is: ${newEmpId}\nYour Username is: ${generatedUsername}`);
+            
+            setSignupForm({ name: '', password: '' });
+            setAuthMode('login');
+          };
+
+          const handleLogin = (e) => {
+            e.preventDefault();
+            const loginInput = loginForm.empId.toLowerCase().trim();
+            
+            const user = users.find(u => 
+              (
+                  u.empId.toLowerCase() === loginInput || 
+                  u.name.toLowerCase() === loginInput || 
+                  (u.username && u.username.toLowerCase() === loginInput) ||
+                  (u.isManager && loginInput === 'admin')
+              ) && 
+              u.password === loginForm.password
+            );
+            
+            if (!user) {
+              return alert("Invalid Employee ID / Username or Password!");
+            }
+
+            const activeSessions = JSON.parse(localStorage.getItem(STORAGE_SESSIONS) || '{}');
+            const existingUserSession = Object.entries(activeSessions).find(([term, empId]) => empId === user.empId);
+            if (existingUserSession && existingUserSession[0] !== loginForm.selectedTerminal) {
+               return alert(`Login Denied: You are already logged in to ${existingUserSession[0]}. Please log out from that machine first.`);
+            }
+
+            if (activeSessions[loginForm.selectedTerminal] && activeSessions[loginForm.selectedTerminal] !== user.empId) {
+                return alert(`Login Denied: Terminal ${loginForm.selectedTerminal} is currently in use by another cashier.`);
+            }
+
+            activeSessions[loginForm.selectedTerminal] = user.empId;
+            localStorage.setItem(STORAGE_SESSIONS, JSON.stringify(activeSessions));
+
+            setTerminalId(loginForm.selectedTerminal);
+            sessionStorage.setItem('zippy_terminal_id', loginForm.selectedTerminal);
+            
+            setCurrentUser(user);
+            sessionStorage.setItem('zippy_active_user', JSON.stringify(user));
+            setLoginForm({ ...loginForm, empId: '', password: '' });
+          };
+
+          const handleLogout = () => {
+            const activeSessions = JSON.parse(localStorage.getItem(STORAGE_SESSIONS) || '{}');
+            delete activeSessions[terminalId];
+            localStorage.setItem(STORAGE_SESSIONS, JSON.stringify(activeSessions));
+
+            setCurrentUser(null);
+            setIsManagerUnlocked(false);
+            sessionStorage.removeItem('zippy_active_user');
+          };
+
+          const handleResetPassword = (e) => {
+            e.preventDefault();
+            const identifier = resetForm.identifier.toLowerCase().trim();
+            const fullName = resetForm.name.toLowerCase().trim();
+
+            const userIndex = users.findIndex(u => 
+                (u.empId.toLowerCase() === identifier || (u.username && u.username.toLowerCase() === identifier)) &&
+                u.name.toLowerCase() === fullName
+            );
+
+            if (userIndex === -1) {
+                return alert("Verification Failed: No account found matching that Username/Emp ID and Full Name.");
+            }
+
+            const updatedUsers = [...users];
+            updatedUsers[userIndex].password = resetForm.newPassword;
+            setUsers(updatedUsers);
+
+            alert("Password Reset Successfully! You can now log in with your new password.");
+            setResetForm({ identifier: '', name: '', newPassword: '' });
+            setAuthMode('login');
+          };
+
+          const handleOpenInventory = () => {
+            if (isManagerUnlocked || currentUser?.isManager) {
+              setActivePortal('inventory');
+            } else {
+              setShowManagerModal(true);
+            }
+          };
+
+          const handleVerifyManager = (e) => {
+            e.preventDefault();
+            const { username, password } = managerForm;
+            if ((username.toLowerCase() === 'admin' || username === '001') && password === 'password123') {
+              setIsManagerUnlocked(true);
+              setShowManagerModal(false);
+              setActivePortal('inventory');
+              setManagerForm({ username: '', password: '' });
+            } else {
+              alert("Access Denied! Invalid Store Manager credentials.");
+            }
+          };
+
+          const handleUpdateStock = (productId, newStock) => {
+            const updatedInv = inventory.map(item => item.id === productId ? { ...item, stock: Math.max(0, parseInt(newStock) || 0) } : item);
+            setInventory(updatedInv);
+            localStorage.setItem(STORAGE_INV, JSON.stringify(updatedInv));
+            
+            if (channelRef.current) {
+              channelRef.current.postMessage({
+                type: 'STOCK_UPDATE',
+                sourceTerminal: 'Central Inventory Manager',
+                payload: { inventory: updatedInv }
+              });
+            }
+          };
+
+          // IN-STORE POS Operations
+          const handleAddPosCart = (product) => {
+            const liveItem = inventory.find(i => i.id === product.id);
+            if (!liveItem || liveItem.stock <= 0) return alert("Item out of stock!");
+
+            setPosCart(prev => {
+              const exists = prev.find(i => i.id === product.id);
+              if (exists) {
+                if (exists.qty + 1 > liveItem.stock) {
+                  alert(`Stock Limit Reached! Only ${liveItem.stock} available.`);
+                  return prev;
+                }
+                return prev.map(i => i.id === product.id ? { ...i, qty: i.qty + 1 } : i);
+              }
+              return [...prev, { ...liveItem, qty: 1 }];
+            });
+          };
+
+          const handleCompletePosSale = async () => {
+            if (posCart.length === 0) return alert("POS cart is empty!");
+            if (!customerMobile.trim() || customerMobile.length < 10) return alert("Valid 10-digit Mobile Number is required for In-Store transactions!");
+            
+            setIsProcessingTx(true);
+
+            const lockAcquired = await acquireLock();
+            if (!lockAcquired) {
+              setIsProcessingTx(false);
+              return alert("System busy handling concurrent checkout! Please try again.");
+            }
+
+            try {
+              const latestInv = JSON.parse(localStorage.getItem(STORAGE_INV)) || inventory;
+              
+              const stockFailures = [];
+              posCart.forEach(cartItem => {
+                const itemInDb = latestInv.find(i => i.id === cartItem.id);
+                if (!itemInDb || itemInDb.stock < cartItem.qty) {
+                  stockFailures.push({ name: cartItem.name, available: itemInDb ? itemInDb.stock : 0 });
+                }
+              });
+
+              if (stockFailures.length > 0) {
+                const failMsg = stockFailures.map(f => `${f.name} (Only ${f.available} remaining)`).join('\n');
+                alert(`Transaction Rejected due to concurrent sale!\nStock updated:\n${failMsg}`);
+                setInventory(latestInv);
+                setIsProcessingTx(false);
+                releaseLock();
+                return;
+              }
+
+              const updatedInv = latestInv.map(item => {
+                const cartMatch = posCart.find(c => c.id === item.id);
+                return cartMatch ? { ...item, stock: item.stock - cartMatch.qty } : item;
+              });
+
+              const subtotal = posCart.reduce((a, b) => a + (b.price * b.qty), 0);
+              const grandTotal = subtotal * 1.05;
+              const newTx = {
+                invoiceNumber: `POS-${Date.now().toString().slice(-6)}`,
+                terminalId: terminalId,
+                cashier: `${currentUser.name} (${currentUser.empId})`,
+                timestamp: new Date().toLocaleTimeString(),
+                customerName: customerName || 'Walk-in Shopper',
+                customerMobile: customerMobile,
+                paymentMethod: paymentMethod,
+                items: posCart,
+                subtotal,
+                grandTotal,
+                type: "IN_STORE"
+              };
+
+              const updatedTxList = [newTx, ...transactions];
+
+              setInventory(updatedInv);
+              setTransactions(updatedTxList);
+              localStorage.setItem(STORAGE_INV, JSON.stringify(updatedInv));
+              localStorage.setItem(STORAGE_TX, JSON.stringify(updatedTxList));
+
+              if (channelRef.current) {
+                channelRef.current.postMessage({
+                  type: 'NEW_TRANSACTION',
+                  sourceTerminal: `${terminalId} [${currentUser.empId}]`,
+                  payload: { inventory: updatedInv, transactions: updatedTxList }
+                });
+              }
+
+              addLog(`Completed In-Store Tx ${newTx.invoiceNumber} on ${terminalId}`);
+              setPosCart([]);
+              setCustomerName('');
+              setCustomerMobile('');
+              setReceiptModal({ isOpen: true, data: newTx });
+            } finally {
+              releaseLock();
+              setIsProcessingTx(false);
+            }
+          };
+
+          // ONLINE ORDERS Operations
+          const handleSimulateNewOnlineOrder = () => {
+              const newOrders = generateDummyOnlineOrders(inventory).slice(0, 1);
+              const updatedOrders = [...onlineOrders, ...newOrders];
+              setOnlineOrders(updatedOrders);
+              localStorage.setItem(STORAGE_ONLINE_ORDERS, JSON.stringify(updatedOrders));
+          };
+
+          const handleProcessOnlineOrder = async (order) => {
+              setIsProcessingTx(true);
+              const lockAcquired = await acquireLock();
+              if (!lockAcquired) {
+                  setIsProcessingTx(false);
+                  return alert("System busy handling concurrent checkout! Please try again.");
+              }
+
+              try {
+                  const latestInv = JSON.parse(localStorage.getItem(STORAGE_INV)) || inventory;
+                  const latestOrders = JSON.parse(localStorage.getItem(STORAGE_ONLINE_ORDERS)) || onlineOrders;
+                  
+                  // Check if order was already processed by another terminal
+                  if (!latestOrders.find(o => o.id === order.id)) {
+                      alert("This order was already processed by another terminal!");
+                      setOnlineOrders(latestOrders);
+                      releaseLock();
+                      setIsProcessingTx(false);
+                      return;
+                  }
+
+                  const stockFailures = [];
+                  order.items.forEach(cartItem => {
+                      const itemInDb = latestInv.find(i => i.id === cartItem.id);
+                      if (!itemInDb || itemInDb.stock < cartItem.qty) {
+                          stockFailures.push({ name: cartItem.name, available: itemInDb ? itemInDb.stock : 0 });
+                      }
+                  });
+
+                  if (stockFailures.length > 0) {
+                      alert(`Cannot process online order! Stock insufficient:\n${stockFailures.map(f => `${f.name} (Only ${f.available} remaining)`).join('\n')}`);
+                      setInventory(latestInv);
+                      releaseLock();
+                      setIsProcessingTx(false);
+                      return;
+                  }
+
+                  // Deduct stock
+                  const updatedInv = latestInv.map(item => {
+                      const cartMatch = order.items.find(c => c.id === item.id);
+                      return cartMatch ? { ...item, stock: item.stock - cartMatch.qty } : item;
+                  });
+
+                  // Create Transaction
+                  const newTx = {
+                      invoiceNumber: order.id, 
+                      terminalId: terminalId,
+                      cashier: `${currentUser.name} (${currentUser.empId})`,
+                      timestamp: new Date().toLocaleTimeString(),
+                      customerName: order.customerName,
+                      customerMobile: order.customerMobile,
+                      customerAddress: order.customerAddress,
+                      paymentMethod: order.paymentMethod,
+                      items: order.items,
+                      subtotal: order.subtotal,
+                      grandTotal: order.grandTotal,
+                      type: "ONLINE"
+                  };
+
+                  const updatedTxList = [newTx, ...transactions];
+                  const updatedOrders = latestOrders.filter(o => o.id !== order.id);
+
+                  setInventory(updatedInv);
+                  setTransactions(updatedTxList);
+                  setOnlineOrders(updatedOrders);
+                  
+                  localStorage.setItem(STORAGE_INV, JSON.stringify(updatedInv));
+                  localStorage.setItem(STORAGE_TX, JSON.stringify(updatedTxList));
+                  localStorage.setItem(STORAGE_ONLINE_ORDERS, JSON.stringify(updatedOrders));
+
+                  if (channelRef.current) {
+                      channelRef.current.postMessage({
+                          type: 'ONLINE_ORDER_PROCESSED',
+                          sourceTerminal: `${terminalId} [${currentUser.empId}]`,
+                          payload: { inventory: updatedInv, transactions: updatedTxList, onlineOrders: updatedOrders }
+                      });
+                  }
+
+                  addLog(`Processed Online Order ${newTx.invoiceNumber} on ${terminalId}`);
+                  setReceiptModal({ isOpen: true, data: newTx });
+              } finally {
+                  releaseLock();
+                  setIsProcessingTx(false);
+              }
+          };
+
+          const handlePrintReceipt = () => {
+              window.print();
+          };
+
+          // Filter logic for Inventory Page
+          const filteredInventory = inventory.filter(prod => {
+              if (invStockFilter === 'ALL') return true;
+              if (invStockFilter === 'RED') return prod.stock === 0;
+              if (invStockFilter === 'AMBER') return prod.stock >= 1 && prod.stock <= 10;
+              if (invStockFilter === 'GREEN') return prod.stock > 10;
+              return true;
+          });
+
+          // MANAGER AUDIT LOGIC: Manager sees all, Cashier sees local terminal
+          const visibleTransactions = (currentUser && currentUser.isManager) 
+              ? transactions 
+              : transactions.filter(tx => tx.terminalId === terminalId);
+
+          // LOGIN / SIGNUP PORTAL IF NOT LOGGED IN
+          if (!currentUser) {
+            return (
+              <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+                <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-8 border border-slate-200">
+                  <div className="text-center mb-6">
+                    <span className="bg-amber-400 text-slate-900 font-black px-3 py-1 rounded text-xl italic inline-block mb-2">zippy</span>
+                    <h1 className="text-xl font-bold text-slate-800">Supermarket POS System</h1>
+                    <p className="text-xs text-slate-500 mt-1">Multi-Terminal Cashier Authentication</p>
+                  </div>
+
+                  <div className="flex border-b mb-6">
+                    <button 
+                      onClick={() => setAuthMode('login')} 
+                      className={`flex-1 pb-2 text-center text-xs font-bold ${authMode === 'login' ? 'border-b-2 border-amber-500 text-slate-900' : 'text-slate-400'}`}
+                    >
+                      LOGIN
+                    </button>
+                    <button 
+                      onClick={() => setAuthMode('signup')} 
+                      className={`flex-1 pb-2 text-center text-xs font-bold ${authMode === 'signup' ? 'border-b-2 border-amber-500 text-slate-900' : 'text-slate-400'}`}
+                    >
+                      SIGN UP
+                    </button>
+                  </div>
+
+                  {authMode === 'login' && (
+                    <form onSubmit={handleLogin} className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">Select POS Machine</label>
+                        <select 
+                          required
+                          value={loginForm.selectedTerminal}
+                          onChange={e => setLoginForm({...loginForm, selectedTerminal: e.target.value})}
+                          className="w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-amber-400 outline-none font-mono font-bold bg-slate-50"
+                        >
+                          {Array.from({ length: 20 }, (_, i) => {
+                            const id = `POS-TERM-${String(i + 1).padStart(2, '0')}`;
+                            return <option key={id} value={id}>{id}</option>;
+                          })}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">Employee ID or Username</label>
+                        <input 
+                          type="text" 
+                          required 
+                          placeholder="e.g. EMP-1001, jajati, or admin" 
+                          value={loginForm.empId} 
+                          onChange={e => setLoginForm({...loginForm, empId: e.target.value})} 
+                          className="w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-amber-400 outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">Password</label>
+                        <input 
+                          type="password" 
+                          required 
+                          placeholder="••••••••" 
+                          value={loginForm.password} 
+                          onChange={e => setLoginForm({...loginForm, password: e.target.value})} 
+                          className="w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-amber-400 outline-none"
+                        />
+                      </div>
+                      <button type="submit" className="w-full py-2.5 bg-amber-400 hover:bg-amber-500 font-black text-xs text-slate-900 rounded-lg transition shadow-md">
+                        LOG IN TO POS SYSTEM
+                      </button>
+                      <div className="text-center mt-2">
+                        <button 
+                          type="button" 
+                          onClick={() => setAuthMode('forgot')} 
+                          className="text-xs text-amber-600 hover:text-amber-700 font-bold underline"
+                        >
+                          Forgot Password?
+                        </button>
+                      </div>
+                      <div className="bg-slate-50 p-2.5 rounded border border-slate-200 text-[11px] text-slate-600 mt-4 space-y-1">
+                        <p className="font-bold text-slate-800">Demo Logins:</p>
+                        <p>Manager: <code className="font-mono text-amber-700">001</code>, <code className="font-mono text-amber-700">parthavi</code> or <code className="font-mono text-amber-700">admin</code> | Pass: <code className="font-mono text-amber-700">parthavi123</code></p>
+                        <p>Cashier 1: <code className="font-mono text-amber-700">EMP-1001</code> or <code className="font-mono text-amber-700">jajati</code> | Pass: <code className="font-mono text-amber-700">jajati123</code></p>
+                        <p>Cashier 2: <code className="font-mono text-amber-700">EMP-1002</code> or <code className="font-mono text-amber-700">gayatri</code> | Pass: <code className="font-mono text-amber-700">gayatri123</code></p>
+                      </div>
+                    </form>
+                  )}
+
+                  {authMode === 'signup' && (
+                    <form onSubmit={handleSignUp} className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">Full Name</label>
+                        <input 
+                          type="text" 
+                          required 
+                          placeholder="e.g. Sarah Connor" 
+                          value={signupForm.name} 
+                          onChange={e => setSignupForm({...signupForm, name: e.target.value})} 
+                          className="w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-amber-400 outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">Create Password</label>
+                        <input 
+                          type="password" 
+                          required 
+                          placeholder="••••••••" 
+                          value={signupForm.password} 
+                          onChange={e => setSignupForm({...signupForm, password: e.target.value})} 
+                          className="w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-amber-400 outline-none"
+                        />
+                      </div>
+                      <button type="submit" className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 font-bold text-xs text-amber-400 rounded-lg transition shadow-md">
+                        CREATE EMPLOYEE ACCOUNT
+                      </button>
+                    </form>
+                  )}
+
+                  {authMode === 'forgot' && (
+                    <form onSubmit={handleResetPassword} className="space-y-4">
+                      <div className="bg-amber-50 p-3 rounded border border-amber-200 mb-4">
+                        <p className="text-xs text-amber-800 font-medium">Please verify your identity to reset your password.</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">Employee ID or Username</label>
+                        <input 
+                          type="text" 
+                          required 
+                          placeholder="e.g. EMP-1001 or jajati" 
+                          value={resetForm.identifier} 
+                          onChange={e => setResetForm({...resetForm, identifier: e.target.value})} 
+                          className="w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-amber-400 outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">Full Name (Case Insensitive)</label>
+                        <input 
+                          type="text" 
+                          required 
+                          placeholder="e.g. Jajati Cashier" 
+                          value={resetForm.name} 
+                          onChange={e => setResetForm({...resetForm, name: e.target.value})} 
+                          className="w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-amber-400 outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">New Password</label>
+                        <input 
+                          type="password" 
+                          required 
+                          placeholder="••••••••" 
+                          value={resetForm.newPassword} 
+                          onChange={e => setResetForm({...resetForm, newPassword: e.target.value})} 
+                          className="w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-amber-400 outline-none"
+                        />
+                      </div>
+                      <button type="submit" className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 font-bold text-xs text-amber-400 rounded-lg transition shadow-md">
+                        RESET PASSWORD
+                      </button>
+                      <div className="text-center mt-2">
+                        <button 
+                          type="button" 
+                          onClick={() => setAuthMode('login')} 
+                          className="text-xs text-slate-500 hover:text-slate-800 font-bold underline"
+                        >
+                          Back to Login
+                        </button>
+                      </div>
+                    </form>
+                  )}
+                </div>
+              </div>
+            );
+          }
+
+          return (
+            <div className="min-h-screen flex flex-col w-full">
+              {/* Header Bar */}
+              <header className="bg-slate-900 text-white p-3 border-b border-slate-800 sticky top-0 z-40">
+                <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+                  
+                  {/* Brand & Terminal ID */}
+                  <div className="flex items-center space-x-3">
+                    <span className="bg-amber-400 text-slate-900 font-black px-2.5 py-1 rounded text-base italic">zippy</span>
+                    
+                    <div className="flex items-center space-x-2 bg-slate-800 px-3 py-1 rounded border border-slate-700">
+                      <span className="text-[11px] text-slate-400 font-bold uppercase">Active POS:</span>
+                      <span className="text-amber-400 font-mono font-bold text-xs">{terminalId}</span>
+                    </div>
+
+                    <button 
+                      onClick={() => window.open(window.location.href, '_blank')} 
+                      className="text-[10px] bg-amber-400/10 text-amber-400 hover:bg-amber-400/20 px-2 py-1 rounded border border-amber-400/30 transition"
+                      title="Open another POS machine in a new tab"
+                    >
+                      ⚡ Open New Terminal
+                    </button>
+                  </div>
+
+                  {/* Active Employee Profile & Logout */}
+                  <div className="flex items-center space-x-4">
+                    <div className="flex items-center space-x-2 bg-slate-800/80 px-3 py-1 rounded-xl border border-slate-700">
+                      <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></div>
+                      <div className="text-left leading-tight">
+                        <span className="text-xs font-bold text-white block">{currentUser.name}</span>
+                        <span className="text-[10px] text-amber-400 font-mono block">
+                            Employee ID: {currentUser.empId} {currentUser.isManager && '(Manager)'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <button 
+                      onClick={handleLogout} 
+                      className="bg-red-500/20 hover:bg-red-500/30 text-red-300 hover:text-red-200 border border-red-500/30 px-3 py-1.5 rounded-lg text-xs font-bold transition"
+                    >
+                      Logout
+                    </button>
+                  </div>
+
+                  {/* Navigation Portals */}
+                  <div className="flex space-x-1 bg-slate-800 p-1 rounded-xl">
+                    <button 
+                      onClick={() => setActivePortal('pos')} 
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold ${activePortal === 'pos' ? 'bg-amber-400 text-slate-900' : 'text-slate-300 hover:bg-slate-700'}`}
+                    >
+                      In-Store POS
+                    </button>
+                    <button 
+                      onClick={() => setActivePortal('online')} 
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 ${activePortal === 'online' ? 'bg-amber-400 text-slate-900' : 'text-slate-300 hover:bg-slate-700'}`}
+                    >
+                      <span>🌐 Online Orders</span>
+                      {onlineOrders.length > 0 && (
+                          <span className="bg-red-500 text-white text-[9px] px-1.5 rounded-full">{onlineOrders.length}</span>
+                      )}
+                    </button>
+                    <button 
+                      onClick={handleOpenInventory} 
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 ${activePortal === 'inventory' ? 'bg-amber-400 text-slate-900' : 'text-slate-300 hover:bg-slate-700'}`}
+                    >
+                      <span>🔒 Central Inventory</span>
+                    </button>
+                    <button 
+                      onClick={() => setActivePortal('audit')} 
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold ${activePortal === 'audit' ? 'bg-amber-400 text-slate-900' : 'text-slate-300 hover:bg-slate-700'}`}
+                    >
+                      Sales Audit
+                    </button>
+                  </div>
+                </div>
+              </header>
+
+              {/* Synchronized Realtime Event Bar */}
+              <div className="bg-amber-50 border-b border-amber-200 px-4 py-1.5 text-[11px] font-mono text-amber-900 flex justify-between items-center">
+                <span className="font-bold flex items-center">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block mr-2 animate-pulse"></span>
+                  Realtime POS Bus — Terminal: {terminalId} | Employee: {currentUser.name} (ID: {currentUser.empId})
+                </span>
+                <span className="truncate max-w-md">{syncLog[0] || 'System Ready'}</span>
+              </div>
+
+              {/* POS TERMINAL PORTAL (IN-STORE) */}
+              {activePortal === 'pos' && (
+                <main className="max-w-7xl w-full mx-auto p-4 grid grid-cols-1 lg:grid-cols-12 gap-4">
+                  <div className="lg:col-span-7 bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
+                    <h2 className="font-black text-sm text-slate-900 flex justify-between">
+                      <span>Supermarket Product Catalog</span>
+                      <span className="text-xs text-slate-400 font-normal">Realtime Stock Auto-Lock</span>
+                    </h2>
+                    <input 
+                      type="text" 
+                      placeholder="Search items or scan barcode..." 
+                      className="w-full px-3 py-2 border rounded-lg text-xs" 
+                      value={posSearch} 
+                      onChange={e => setPosSearch(e.target.value)} 
+                    />
+                    <div className="max-h-[440px] overflow-y-auto space-y-2 pr-1">
+                      {inventory.filter(i => i.name.toLowerCase().includes(posSearch.toLowerCase())).map(prod => (
+                        <div key={prod.id} className="p-2.5 border rounded-lg flex justify-between items-center hover:border-amber-400">
+                          <div>
+                            <p className="text-xs font-bold text-slate-900">{prod.name}</p>
+                            <p className="text-[10px] text-slate-500">Barcode: {prod.barcode} | Unit: {prod.unit}</p>
+                            <p className={`text-[10px] font-bold ${prod.stock === 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                              Available Stock: {prod.stock}
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-xs font-black block mb-1">₹{prod.price}</span>
+                            <button 
+                              disabled={prod.stock === 0} 
+                              onClick={() => handleAddPosCart(prod)} 
+                              className="px-2.5 py-1 bg-slate-900 text-amber-400 font-bold text-xs rounded disabled:bg-slate-200 disabled:text-slate-400"
+                            >
+                              + Add Item
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="lg:col-span-5 bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between space-y-4">
+                    <div>
+                      <h3 className="font-bold text-xs border-b pb-2 flex justify-between">
+                        <span>Current Bill ({posCart.reduce((a,b)=>a+b.qty,0)} items)</span>
+                        <span className="font-mono text-amber-600 font-bold">{terminalId}</span>
+                      </h3>
+                      <div className="max-h-40 overflow-y-auto space-y-2 py-2">
+                        {posCart.length === 0 ? (
+                          <p className="text-center text-xs text-slate-400 py-6">Cart is empty. Select items from catalog.</p>
+                        ) : (
+                          posCart.map(item => (
+                            <div key={item.id} className="p-2 bg-slate-50 rounded text-xs flex justify-between items-center">
+                              <div>
+                                <p className="font-bold">{item.name}</p>
+                                <p className="text-[10px] text-slate-400">₹{item.price} x {item.qty}</p>
+                              </div>
+                              <span className="font-bold">₹{(item.price * item.qty).toFixed(2)}</span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 border-t pt-3">
+                      <div className="bg-slate-50 p-2 rounded text-[11px] font-mono text-slate-600 flex justify-between">
+                        <span>Cashier: <strong>{currentUser.name}</strong></span>
+                        <span>Employee ID: <strong>{currentUser.empId}</strong></span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                          <input 
+                            type="text" 
+                            placeholder="Customer Name (Optional)" 
+                            value={customerName} 
+                            onChange={e => setCustomerName(e.target.value)} 
+                            className="p-2 border rounded w-full text-xs outline-none" 
+                          />
+                          <input 
+                            type="tel" 
+                            required
+                            maxLength="10"
+                            placeholder="Mobile No. (Required) *" 
+                            value={customerMobile} 
+                            onChange={e => setCustomerMobile(e.target.value.replace(/\D/g, '').slice(0, 10))} 
+                            className="p-2 border rounded w-full text-xs outline-none focus:ring-1 focus:ring-amber-400" 
+                          />
+                      </div>
+
+                      {/* Payment Mode Selector */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">Select Payment Mode:</label>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {['Cash', 'Card', 'Gift Card', 'UPI'].map(method => (
+                            <button 
+                              key={method}
+                              type="button"
+                              onClick={() => setPaymentMethod(method)}
+                              className={`py-1.5 text-[11px] font-bold rounded border transition ${paymentMethod === method ? 'bg-slate-900 text-amber-400 border-slate-900' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}`}
+                            >
+                              {method}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="flex justify-between font-black text-sm pt-1">
+                        <span>Total Payable (incl. GST):</span>
+                        <span className="text-amber-600">₹{(posCart.reduce((a,b) => a + (b.price*b.qty), 0) * 1.05).toFixed(2)}</span>
+                      </div>
+
+                      <button 
+                        onClick={handleCompletePosSale} 
+                        disabled={posCart.length === 0 || isProcessingTx} 
+                        className="w-full py-2.5 bg-amber-400 hover:bg-amber-500 font-black text-xs text-slate-900 rounded-lg disabled:bg-slate-200 transition shadow-sm"
+                      >
+                        {isProcessingTx ? 'VERIFYING TRANSACTION...' : `PAY & PROCESS SALE (${paymentMethod.toUpperCase()})`}
+                      </button>
+                    </div>
+                  </div>
+                </main>
+              )}
+
+              {/* ONLINE ORDERS PORTAL */}
+              {activePortal === 'online' && (
+                <main className="max-w-7xl w-full mx-auto p-4 space-y-4">
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-4">
+                    <div className="flex justify-between items-center border-b pb-3">
+                      <div>
+                        <h2 className="font-black text-base text-slate-900 flex items-center gap-2">
+                          <span>Pending Online Orders</span>
+                          <span className="bg-blue-100 text-blue-800 text-[10px] px-2 py-0.5 rounded font-bold">{onlineOrders.length} Pending</span>
+                        </h2>
+                        <p className="text-xs text-slate-500">Incoming web and app orders. Any terminal can process and print these receipts.</p>
+                      </div>
+                      <button 
+                        onClick={handleSimulateNewOnlineOrder} 
+                        className="text-xs bg-slate-900 text-amber-400 hover:bg-slate-800 px-3 py-1.5 rounded font-bold shadow-sm"
+                      >
+                        + Simulate New Web Order
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {onlineOrders.length === 0 ? (
+                            <div className="col-span-full py-12 text-center text-slate-400 text-sm font-bold">
+                                No pending online orders.
+                            </div>
+                        ) : (
+                            onlineOrders.map(order => (
+                                <div key={order.id} className="border border-slate-200 rounded-xl p-4 shadow-sm hover:border-amber-400 transition bg-slate-50 flex flex-col justify-between">
+                                    <div>
+                                        <div className="flex justify-between items-start border-b border-slate-200 pb-2 mb-2">
+                                            <div>
+                                                <h3 className="font-black text-slate-900 text-sm">{order.id}</h3>
+                                                <p className="text-[10px] text-slate-500">{order.timestamp}</p>
+                                            </div>
+                                            <span className="bg-amber-200 text-amber-900 text-[9px] px-2 py-0.5 rounded font-bold uppercase">Prepaid</span>
+                                        </div>
+                                        <p className="text-xs font-bold text-slate-700 mb-0.5">Customer: {order.customerName}</p>
+                                        <p className="text-[10px] text-slate-500 mb-0.5">📞 {order.customerMobile}</p>
+                                        <p className="text-[10px] text-slate-500 mb-3 line-clamp-1">📍 {order.customerAddress}</p>
+                                        
+                                        <div className="space-y-1 mb-4 border-t border-slate-200 pt-2">
+                                            {order.items.map((it, idx) => (
+                                                <div key={idx} className="flex justify-between text-[11px] text-slate-600">
+                                                    <span>{it.qty}x {it.name}</span>
+                                                    <span>₹{(it.price * it.qty).toFixed(2)}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div className="flex justify-between font-black text-sm mb-3">
+                                            <span>Total:</span>
+                                            <span className="text-amber-600">₹{order.grandTotal.toFixed(2)}</span>
+                                        </div>
+                                        <button 
+                                            onClick={() => handleProcessOnlineOrder(order)}
+                                            disabled={isProcessingTx}
+                                            className="w-full py-2 bg-amber-400 hover:bg-amber-500 font-bold text-xs text-slate-900 rounded-lg disabled:bg-slate-200 transition shadow-sm"
+                                        >
+                                            Process & Print Receipt
+                                        </button>
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                  </div>
+                </main>
+              )}
+
+              {/* MANAGER-PROTECTED CENTRAL INVENTORY PORTAL */}
+              {activePortal === 'inventory' && (
+                <main className="max-w-7xl w-full mx-auto p-4 space-y-4">
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-4">
+                    <div className="flex justify-between items-center border-b pb-3">
+                      <div>
+                        <h2 className="font-black text-base text-slate-900 flex items-center gap-2">
+                          <span>Central Inventory Management</span>
+                          <span className="bg-emerald-100 text-emerald-800 text-[10px] px-2 py-0.5 rounded font-bold">Store Manager Unlocked</span>
+                        </h2>
+                        <p className="text-xs text-slate-500">Update central stock quantities. Changes sync live to all 20 POS terminals.</p>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2 bg-slate-50 px-2 py-1 rounded border border-slate-200">
+                          <label className="text-[11px] font-bold text-slate-600">Filter Stock:</label>
+                          <select 
+                            value={invStockFilter} 
+                            onChange={(e) => setInvStockFilter(e.target.value)}
+                            className="bg-white border border-slate-300 text-xs rounded px-2 py-1 outline-none focus:ring-1 focus:ring-amber-400"
+                          >
+                            <option value="ALL">All Items</option>
+                            <option value="RED">🔴 Out of Stock (0)</option>
+                            <option value="AMBER">🟠 Low Stock (1-10)</option>
+                            <option value="GREEN">🟢 In Stock (&gt;10)</option>
+                          </select>
+                        </div>
+                        <button 
+                          onClick={() => { setIsManagerUnlocked(false); setActivePortal('pos'); }} 
+                          className="text-xs bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded font-bold text-slate-700"
+                        >
+                          Lock & Exit Inventory
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-50 border-b font-bold text-slate-700">
+                          <tr>
+                            <th className="p-2.5">ID</th>
+                            <th className="p-2.5">Product Name</th>
+                            <th className="p-2.5">Barcode</th>
+                            <th className="p-2.5">Category</th>
+                            <th className="p-2.5">Price</th>
+                            <th className="p-2.5">Current Stock</th>
+                            <th className="p-2.5">Manage Stock</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y">
+                          {filteredInventory.length === 0 ? (
+                             <tr><td colSpan="7" className="p-6 text-center text-slate-500">No items match the selected filter.</td></tr>
+                          ) : (
+                            filteredInventory.map(prod => {
+                              const stockStatusColor = prod.stock === 0 ? 'bg-red-100 text-red-800' : (prod.stock <= 10 ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800');
+                              return (
+                                <tr key={prod.id} className="hover:bg-slate-50">
+                                  <td className="p-2.5 font-mono text-slate-400">#{prod.id}</td>
+                                  <td className="p-2.5 font-bold text-slate-900">{prod.name}</td>
+                                  <td className="p-2.5 font-mono text-slate-500">{prod.barcode}</td>
+                                  <td className="p-2.5 text-slate-600">{prod.category}</td>
+                                  <td className="p-2.5 font-bold">₹{prod.price}</td>
+                                  <td className="p-2.5 font-bold">
+                                    <span className={`px-2 py-0.5 rounded text-[11px] ${stockStatusColor}`}>
+                                      {prod.stock} units
+                                    </span>
+                                  </td>
+                                  <td className="p-2.5">
+                                    <input 
+                                      type="number" 
+                                      min="0"
+                                      value={prod.stock} 
+                                      onChange={(e) => handleUpdateStock(prod.id, e.target.value)}
+                                      className="w-20 px-2 py-1 border rounded text-xs font-bold font-mono focus:ring-2 focus:ring-amber-400 outline-none"
+                                    />
+                                  </td>
+                                </tr>
+                              )
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </main>
+              )}
+
+              {/* SALES AUDIT LOG PORTAL - FILTERED BASED ON USER ROLE */}
+              {activePortal === 'audit' && (
+                <main className="max-w-7xl w-full mx-auto p-4 space-y-4">
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
+                    <div className="flex justify-between items-end">
+                      <div>
+                        <h2 className="font-black text-sm text-slate-900">
+                            {currentUser?.isManager ? 'Global Sales Audit Log' : 'Local Sales Audit Log'}
+                        </h2>
+                        <p className="text-[10px] text-slate-500">
+                            {currentUser?.isManager 
+                                ? 'Showing all transactions (In-Store & Online) processed across ALL terminals.' 
+                                : <span>Showing transactions (In-Store & Online) processed ONLY on <strong>{terminalId}</strong></span>
+                            }
+                        </p>
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-50 border-b font-bold text-slate-700">
+                          <tr>
+                            <th className="p-2.5">Invoice #</th>
+                            {currentUser?.isManager && <th className="p-2.5">Terminal ID</th>}
+                            <th className="p-2.5">Type</th>
+                            <th className="p-2.5">Cashier</th>
+                            <th className="p-2.5">Time</th>
+                            <th className="p-2.5">Customer Details</th>
+                            <th className="p-2.5">Payment Mode</th>
+                            <th className="p-2.5">Grand Total</th>
+                            <th className="p-2.5">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y">
+                          {visibleTransactions.length === 0 ? (
+                            <tr><td colSpan={currentUser?.isManager ? "9" : "8"} className="p-4 text-center text-slate-400">No transactions recorded yet.</td></tr>
+                          ) : (
+                            visibleTransactions.map(tx => (
+                              <tr key={tx.invoiceNumber} className="hover:bg-slate-50">
+                                <td className="p-2.5 font-mono font-bold text-slate-900">{tx.invoiceNumber}</td>
+                                {currentUser?.isManager && (
+                                    <td className="p-2.5"><span className="bg-slate-100 px-2 py-0.5 rounded font-mono text-[10px]">{tx.terminalId}</span></td>
+                                )}
+                                <td className="p-2.5">
+                                  <span className={`px-2 py-0.5 rounded font-bold text-[9px] ${tx.type === 'ONLINE' ? 'bg-blue-100 text-blue-800' : 'bg-slate-200 text-slate-800'}`}>
+                                    {tx.type}
+                                  </span>
+                                </td>
+                                <td className="p-2.5 font-medium">{tx.cashier}</td>
+                                <td className="p-2.5 text-slate-500">{tx.timestamp}</td>
+                                <td className="p-2.5">
+                                    <div className="font-bold">{tx.customerName}</div>
+                                    {tx.customerMobile && <div className="text-[10px] text-slate-500">📞 {tx.customerMobile}</div>}
+                                </td>
+                                <td className="p-2.5">
+                                  <span className="bg-amber-100 text-amber-900 px-2 py-0.5 rounded font-bold text-[10px]">
+                                    {tx.paymentMethod || 'Cash'}
+                                  </span>
+                                </td>
+                                <td className="p-2.5 font-black text-amber-600">₹{tx.grandTotal.toFixed(2)}</td>
+                                <td className="p-2.5">
+                                  <button 
+                                    onClick={() => setReceiptModal({ isOpen: true, data: tx })}
+                                    className="bg-slate-900 text-amber-400 px-2 py-1 rounded text-[10px] font-bold hover:bg-slate-800 transition shadow-sm"
+                                  >
+                                    📄 View Receipt
+                                  </button>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </main>
+              )}
+
+              {/* STORE MANAGER LOGIN MODAL */}
+              {showManagerModal && (
+                <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+                  <div className="bg-white rounded-2xl max-w-sm w-full p-6 space-y-4 shadow-2xl">
+                    <div className="text-center border-b pb-3">
+                      <span className="text-2xl">🔒</span>
+                      <h3 className="font-black text-slate-900 text-base">Store Manager Verification</h3>
+                      <p className="text-xs text-slate-500 mt-1">Central inventory is protected. Please enter manager credentials to proceed.</p>
+                    </div>
+
+                    <form onSubmit={handleVerifyManager} className="space-y-3">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">Username / Employee ID</label>
+                        <input 
+                          type="text" 
+                          required 
+                          placeholder="e.g. admin or 001" 
+                          value={managerForm.username} 
+                          onChange={e => setManagerForm({ ...managerForm, username: e.target.value })}
+                          className="w-full px-3 py-2 border rounded-lg text-xs outline-none focus:ring-2 focus:ring-amber-400"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">Password</label>
+                        <input 
+                          type="password" 
+                          required 
+                          placeholder="••••••••" 
+                          value={managerForm.password} 
+                          onChange={e => setManagerForm({ ...managerForm, password: e.target.value })}
+                          className="w-full px-3 py-2 border rounded-lg text-xs outline-none focus:ring-2 focus:ring-amber-400"
+                        />
+                      </div>
+
+                      <div className="bg-amber-50 p-2 rounded text-[10px] text-amber-800">
+                        Default Manager Login: Username: <strong>admin</strong> | Pass: <strong>password123</strong>
+                      </div>
+
+                      <div className="flex gap-2 pt-2">
+                        <button 
+                          type="button" 
+                          onClick={() => setShowManagerModal(false)}
+                          className="flex-1 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-lg"
+                        >
+                          Cancel
+                        </button>
+                        <button 
+                          type="submit" 
+                          className="flex-1 py-2 bg-amber-400 hover:bg-amber-500 text-slate-900 font-black text-xs rounded-lg"
+                        >
+                          Verify & Access
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              )}
+
+              {/* RECEIPT PRINT MODAL */}
+              {receiptModal.isOpen && receiptModal.data && (
+                <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+                  <div className="bg-white rounded-2xl max-w-sm w-full p-6 space-y-3 relative">
+                    
+                    {/* The Printable Area boundary */}
+                    <div id="printable-receipt-area" className="bg-white">
+                      <div className="text-center border-b pb-2">
+                        <h2 className="text-xl font-black italic">zippy supermarket</h2>
+                        <p className="text-[10px] text-slate-500">Terminal: {receiptModal.data.terminalId}</p>
+                        <p className="text-[10px] text-slate-500">Cashier: {receiptModal.data.cashier}</p>
+                      </div>
+                      <div className="text-[10px] space-y-1 mt-2">
+                        <p>Invoice #: <strong>{receiptModal.data.invoiceNumber}</strong></p>
+                        <p>Order Type: <strong className={receiptModal.data.type === 'ONLINE' ? 'text-blue-600' : ''}>{receiptModal.data.type}</strong></p>
+                        <p>Time: <strong>{receiptModal.data.timestamp}</strong></p>
+                        <p>Payment Mode: <strong className="text-amber-700">{receiptModal.data.paymentMethod}</strong></p>
+                      </div>
+                      
+                      <div className="text-[10px] space-y-0.5 mt-2 border-t pt-2">
+                        <p className="font-bold">Customer Details:</p>
+                        <p>Name: <strong>{receiptModal.data.customerName}</strong></p>
+                        {receiptModal.data.customerMobile && <p>Mobile: <strong>{receiptModal.data.customerMobile}</strong></p>}
+                        {receiptModal.data.customerAddress && <p>Address: <strong>{receiptModal.data.customerAddress}</strong></p>}
+                      </div>
+
+                      <div className="border-t border-b py-2 my-2 space-y-1 text-xs">
+                        {receiptModal.data.items.map((it, idx) => (
+                          <div key={idx} className="flex justify-between">
+                            <span>{it.name} x {it.qty}</span>
+                            <span className="font-bold">₹{(it.price * it.qty).toFixed(2)}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="text-right font-black text-sm mt-2">
+                        Grand Total: ₹{receiptModal.data.grandTotal.toFixed(2)}
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2 pt-2 no-print">
+                      <button 
+                        onClick={handlePrintReceipt} 
+                        className="flex-1 py-2 bg-amber-400 hover:bg-amber-500 text-slate-900 font-bold text-xs rounded-lg shadow-sm"
+                      >
+                        🖨️ Print Receipt
+                      </button>
+                      <button 
+                        onClick={() => setReceiptModal({ isOpen: false, data: null })} 
+                        className="flex-1 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-lg shadow-sm"
+                      >
+                        Close
+                      </button>
+                    </div>
+
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<ZippyApp />);
+    </script>
+</body>
+</html>
+
