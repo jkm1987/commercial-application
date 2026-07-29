@@ -1,0 +1,966 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Zippy Supermarket - Customer App</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM CDN -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <!-- Babel standalone compiler for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background-color: #f8fafc;
+            touch-action: pan-y;
+            -webkit-text-size-adjust: 100%;
+        }
+
+        .thermal-receipt {
+            font-family: 'Courier New', Courier, monospace;
+            color: #000;
+        }
+        .thermal-receipt .divider {
+            border-bottom: 1px dashed #000;
+            margin: 8px 0;
+        }
+        .thermal-receipt table {
+            width: 100%;
+        }
+        .thermal-receipt th, .thermal-receipt td {
+            padding: 2px 0;
+        }
+
+        @media print {
+            @page {
+                margin: 0; 
+            }
+            body, html {
+                margin: 0;
+                padding: 0;
+                background-color: white;
+            }
+            body * { 
+                visibility: hidden; 
+            }
+            
+            #printable-receipt-area, #printable-receipt-area * { 
+                visibility: visible; 
+            }
+            #printable-receipt-area {
+                position: absolute !important;
+                left: 0 !important;
+                top: 0 !important;
+                width: 80mm !important; 
+                max-width: 100% !important;
+                margin: 0 !important;
+                padding: 10px !important;
+                background: white !important;
+                box-shadow: none !important;
+                border: none !important;
+            }
+            .no-print { 
+                display: none !important; 
+            }
+        }
+    </style>
+</head>
+<body class="min-h-screen relative text-slate-900">
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const categoriesData = {
+          "Dairy & Bakery": { 
+              adjectives: ["Organic", "Farm Fresh", "Greek", "Salted", "Unsalted", "Premium", "Low Fat", "Whole", "Artisan", "Rich", "Aged", "Classic"], 
+              nouns: ["Milk", "Brown Bread", "Butter", "Paneer", "Cheese", "Yogurt", "Croissant", "Bagel", "Cream", "Whey", "Sourdough", "Muffin"], 
+              units: ["1 L", "400 g", "500 g", "200 g"], 
+              basePrice: 50 
+          },
+          "Fruits & Vegetables": { 
+              adjectives: ["Fresh", "Ripe", "Juicy", "Crisp", "Local", "Exotic", "Organic", "Tender", "Green", "Sweet", "Leafy", "Root"], 
+              nouns: ["Bananas", "Tomatoes", "Onions", "Potatoes", "Apples", "Carrots", "Spinach", "Grapes", "Mangoes", "Avocados", "Broccoli", "Cabbage"], 
+              units: ["1 kg", "500 g", "4 pcs", "1 bunch"], 
+              basePrice: 35 
+          },
+          "Snacks & Drinks": { 
+              adjectives: ["Crunchy", "Spicy", "Classic", "Roasted", "Diet", "Fried", "Baked", "Sweet", "Savory", "Chilled", "Sparkling", "Fizzy"], 
+              nouns: ["Potato Chips", "Cola Drink", "Almonds", "Cashews", "Green Tea", "Biscuits", "Cookies", "Nachos", "Energy Drink", "Juice", "Popcorn", "Peanuts"], 
+              units: ["100 g", "200 g", "1.25 L", "500 ml"], 
+              basePrice: 40 
+          },
+          "Atta, Rice & Staples": { 
+              adjectives: ["Polished", "Aroma", "Chakki Fresh", "Pure", "Refined", "Premium", "Unpolished", "Organic", "Sortex", "Aged", "Golden", "Fortified"], 
+              nouns: ["Basmati Rice", "Cooking Oil", "Atta", "Toor Dal", "Salt", "Sugar", "Moong Dal", "Chana Dal", "Poha", "Mustard Oil", "Jaggery", "Maida"], 
+              units: ["1 kg", "5 kg", "1 L", "500 g"], 
+              basePrice: 90 
+          },
+          "Personal Care": {
+              adjectives: ["Herbal", "Refreshing", "Antibacterial", "Moisturizing", "Gentle", "Natural", "Deep Clean", "Soothing", "Fragrant", "Daily", "Whitening", "Silky"],
+              nouns: ["Soap", "Shampoo", "Toothpaste", "Body Wash", "Face Wash", "Deodorant", "Hair Oil", "Lotion", "Talcum Powder", "Conditioner", "Hand Wash", "Scrub"],
+              units: ["100 g", "200 ml", "500 ml", "1 pc"],
+              basePrice: 120
+          }
+        };
+
+        const generateCatalog = () => {
+          const list = [];
+          const categoryKeys = Object.keys(categoriesData);
+          let idCounter = 1;
+          for (let i = 0; i < 500; i++) {
+            const catName = categoryKeys[i % categoryKeys.length];
+            const cat = categoriesData[catName];
+            const adj = cat.adjectives[i % cat.adjectives.length];
+            const noun = cat.nouns[Math.floor(i / cat.adjectives.length) % cat.nouns.length];
+            const unit = cat.units[i % cat.units.length];
+            const price = parseFloat((cat.basePrice + ((i * 3.7) % 150)).toFixed(2));
+            
+            list.push({
+              id: idCounter,
+              barcode: `890${String(10000000 + idCounter).slice(1)}`,
+              name: `${adj} ${noun} ${i + 1}`,
+              category: catName,
+              unit,
+              stock: 500,
+              price,
+              discount: 0,
+              mrp: parseFloat((price * 1.15).toFixed(2))
+            });
+            idCounter++;
+          }
+          return list;
+        };
+
+        const STORAGE_INV = 'zippy_multi_inv_v4';
+        const STORAGE_TX = 'zippy_multi_tx_v2';
+        const STORAGE_ONLINE_ORDERS = 'zippy_online_orders_v2';
+        
+        const STORAGE_CUSTOMERS = 'zippy_customer_users';
+        const STORAGE_ACTIVE_CUSTOMER = 'zippy_active_customer';
+
+        function CustomerApp() {
+            const [inventory, setInventory] = useState(() => {
+                const saved = localStorage.getItem(STORAGE_INV);
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    if (parsed.length >= 500) return parsed;
+                }
+                const fresh = generateCatalog();
+                localStorage.setItem(STORAGE_INV, JSON.stringify(fresh));
+                return fresh;
+            });
+            const [onlineOrders, setOnlineOrders] = useState(() => {
+                const saved = localStorage.getItem(STORAGE_ONLINE_ORDERS);
+                return saved ? JSON.parse(saved) : [];
+            });
+            const [transactions, setTransactions] = useState(() => {
+                const saved = localStorage.getItem(STORAGE_TX);
+                return saved ? JSON.parse(saved) : [];
+            });
+
+            const [customers, setCustomers] = useState(() => {
+                const saved = localStorage.getItem(STORAGE_CUSTOMERS);
+                return saved ? JSON.parse(saved) : [];
+            });
+            const [currentUser, setCurrentUser] = useState(() => {
+                const saved = localStorage.getItem(STORAGE_ACTIVE_CUSTOMER);
+                return saved ? JSON.parse(saved) : null;
+            });
+
+            const [authMode, setAuthMode] = useState('login'); 
+            const [activeView, setActiveView] = useState('shop'); 
+            const [cart, setCart] = useState([]);
+            const [searchQuery, setSearchQuery] = useState('');
+            
+            const [receiptModal, setReceiptModal] = useState({ isOpen: false, data: null });
+            const [returnModal, setReturnModal] = useState({ isOpen: false, data: null, items: [] });
+
+            const [loginForm, setLoginForm] = useState({ mobile: '', password: '' });
+            const [signupForm, setSignupForm] = useState({ name: '', mobile: '', password: '', address: '' });
+
+            const channelRef = useRef(null);
+
+            useEffect(() => {
+                const channel = new BroadcastChannel('zippy_realtime_sync');
+                channelRef.current = channel;
+
+                channel.onmessage = (event) => {
+                    const { type, payload } = event.data;
+                    if (type === 'STOCK_UPDATE' || type === 'NEW_TRANSACTION' || type === 'ONLINE_ORDER_PROCESSED' || type === 'NEW_ONLINE_ORDER') {
+                        if (payload.inventory) setInventory(payload.inventory);
+                        if (payload.transactions) setTransactions(payload.transactions);
+                        if (payload.onlineOrders) setOnlineOrders(payload.onlineOrders);
+                    }
+                };
+
+                const handleStorageChange = (e) => {
+                    if (e.key === STORAGE_INV && e.newValue) setInventory(JSON.parse(e.newValue));
+                    if (e.key === STORAGE_TX && e.newValue) setTransactions(JSON.parse(e.newValue));
+                    if (e.key === STORAGE_ONLINE_ORDERS && e.newValue) setOnlineOrders(JSON.parse(e.newValue));
+                };
+
+                window.addEventListener('storage', handleStorageChange);
+                return () => {
+                    channel.close();
+                    window.removeEventListener('storage', handleStorageChange);
+                };
+            }, []);
+
+            useEffect(() => {
+                localStorage.setItem(STORAGE_CUSTOMERS, JSON.stringify(customers));
+            }, [customers]);
+
+            const handleSignup = (e) => {
+                e.preventDefault();
+                if (customers.find(c => c.mobile === signupForm.mobile)) {
+                    return alert("An account with this mobile number already exists.");
+                }
+                const newCustomer = { ...signupForm };
+                setCustomers([...customers, newCustomer]);
+                setCurrentUser(newCustomer);
+                localStorage.setItem(STORAGE_ACTIVE_CUSTOMER, JSON.stringify(newCustomer));
+                setSignupForm({ name: '', mobile: '', password: '', address: '' });
+            };
+
+            const handleLogin = (e) => {
+                e.preventDefault();
+                const user = customers.find(c => c.mobile === loginForm.mobile && c.password === loginForm.password);
+                if (user) {
+                    setCurrentUser(user);
+                    localStorage.setItem(STORAGE_ACTIVE_CUSTOMER, JSON.stringify(user));
+                    setLoginForm({ mobile: '', password: '' });
+                } else {
+                    alert("Invalid mobile number or password.");
+                }
+            };
+
+            const handleLogout = () => {
+                setCurrentUser(null);
+                localStorage.removeItem(STORAGE_ACTIVE_CUSTOMER);
+                setCart([]);
+                setActiveView('shop');
+            };
+
+            const addToCart = (product) => {
+                setCart(prev => {
+                    const existing = prev.find(item => item.id === product.id);
+                    if (existing) {
+                        if (existing.qty >= product.stock) {
+                            alert("Cannot add more. Store stock limit reached.");
+                            return prev;
+                        }
+                        return prev.map(item => item.id === product.id ? { ...item, qty: item.qty + 1 } : item);
+                    }
+                    return [...prev, { ...product, qty: 1 }];
+                });
+            };
+
+            const removeFromCart = (productId) => {
+                setCart(prev => prev.filter(item => item.id !== productId));
+            };
+
+            const updateCartQty = (productId, delta) => {
+                setCart(prev => {
+                    return prev.map(item => {
+                        if (item.id === productId) {
+                            const newQty = item.qty + delta;
+                            const dbItem = inventory.find(i => i.id === productId);
+                            if (newQty > dbItem.stock) {
+                                alert("Store stock limit reached.");
+                                return item;
+                            }
+                            if (newQty < 1) return item;
+                            return { ...item, qty: newQty };
+                        }
+                        return item;
+                    });
+                });
+            };
+
+            const handleCheckout = () => {
+                if (cart.length === 0) return alert("Your cart is empty.");
+
+                const latestInv = JSON.parse(localStorage.getItem(STORAGE_INV)) || inventory;
+                const outOfStock = cart.filter(cartItem => {
+                    const dbItem = latestInv.find(i => i.id === cartItem.id);
+                    return !dbItem || dbItem.stock < cartItem.qty;
+                });
+
+                if (outOfStock.length > 0) {
+                    alert(`Some items are out of stock. Please adjust your cart: ${outOfStock.map(i => i.name).join(', ')}`);
+                    setInventory(latestInv); 
+                    return;
+                }
+
+                const syncedCartItems = cart.map(cartItem => {
+                    const dbItem = latestInv.find(i => i.id === cartItem.id) || cartItem;
+                    return { ...cartItem, price: dbItem.price, discount: dbItem.discount || 0 };
+                });
+
+                const subtotal = syncedCartItems.reduce((sum, item) => {
+                    const itemDiscount = item.discount || 0;
+                    const discountedPrice = item.price * (1 - (itemDiscount / 100));
+                    return sum + (discountedPrice * item.qty);
+                }, 0);
+                
+                const grandTotal = subtotal * 1.05; 
+
+                const newOrder = {
+                    id: `WEB-${Math.floor(10000 + Math.random() * 90000)}`,
+                    customerName: currentUser.name,
+                    customerMobile: currentUser.mobile,
+                    customerAddress: currentUser.address,
+                    items: syncedCartItems,
+                    subtotal: subtotal,
+                    grandTotal: grandTotal,
+                    paymentMethod: 'Prepaid (UPI)',
+                    timestamp: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }),
+                    status: 'PENDING',
+                    type: 'ONLINE'
+                };
+
+                const updatedOrders = [newOrder, ...onlineOrders];
+                setOnlineOrders(updatedOrders);
+                localStorage.setItem(STORAGE_ONLINE_ORDERS, JSON.stringify(updatedOrders));
+
+                if (channelRef.current) {
+                    channelRef.current.postMessage({
+                        type: 'NEW_ONLINE_ORDER', 
+                        payload: { onlineOrders: updatedOrders }
+                    });
+                }
+
+                setCart([]);
+                setActiveView('orders');
+                alert("Order placed successfully! The store is preparing your items.");
+            };
+
+            const getReturnableItems = (originalTx) => {
+                const relatedReturns = transactions.filter(t => t.type === 'RETURN' && t.invoiceNumber?.includes(originalTx.invoiceNumber));
+                const pendingReturns = onlineOrders.filter(o => o.type === 'RETURN' && o.originalInvoice === originalTx.invoiceNumber);
+                
+                return originalTx.items.map(item => {
+                    const totalReturned = relatedReturns.reduce((sum, retTx) => {
+                        const returnedItem = retTx.items.find(i => i.id === item.id);
+                        return sum + (returnedItem ? returnedItem.qty : 0);
+                    }, 0);
+                    
+                    const totalPending = pendingReturns.reduce((sum, retTx) => {
+                        const returnedItem = retTx.items.find(i => i.id === item.id);
+                        return sum + (returnedItem ? returnedItem.qty : 0);
+                    }, 0);
+                    
+                    return {
+                        ...item,
+                        qty: item.qty - totalReturned - totalPending, 
+                        originalPurchasedQty: item.qty
+                    };
+                }).filter(item => item.qty > 0); 
+            };
+
+            const openReturnModal = (tx, returnableItems) => {
+                const initialItems = returnableItems.map(i => ({ ...i, returnQty: 0 }));
+                setReturnModal({ isOpen: true, data: tx, items: initialItems });
+            };
+
+            const updateReturnQty = (id, delta) => {
+                setReturnModal(prev => {
+                    const updatedItems = prev.items.map(item => {
+                        if (item.id === id) {
+                            const newQty = item.returnQty + delta;
+                            if (newQty >= 0 && newQty <= item.qty) {
+                                return { ...item, returnQty: newQty };
+                            }
+                        }
+                        return item;
+                    });
+                    return { ...prev, items: updatedItems };
+                });
+            };
+
+            const handleConfirmReturn = () => {
+                const itemsToReturn = returnModal.items.filter(i => i.returnQty > 0).map(i => ({...i, qty: i.returnQty}));
+                if (itemsToReturn.length === 0) return alert("Please select at least one item to return.");
+
+                const confirmAction = window.confirm("Submit return request? The refund will be processed once approved by the store.");
+                if (!confirmAction) return;
+
+                const originalTx = returnModal.data;
+                
+                const subtotal = itemsToReturn.reduce((sum, item) => {
+                    const itemDiscount = item.discount || 0;
+                    const discountedPrice = item.price * (1 - (itemDiscount / 100));
+                    return sum + (discountedPrice * item.qty);
+                }, 0);
+                
+                const grandTotal = subtotal * 1.05;
+
+                const pendingReturn = {
+                    id: `RET-${originalTx.invoiceNumber}-${Date.now().toString().slice(-4)}`,
+                    customerName: currentUser.name,
+                    customerMobile: currentUser.mobile,
+                    customerAddress: currentUser.address,
+                    items: itemsToReturn,
+                    subtotal: -Math.abs(subtotal),
+                    grandTotal: -Math.abs(grandTotal),
+                    paymentMethod: originalTx.paymentMethod || 'Prepaid (UPI)',
+                    timestamp: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }),
+                    status: 'PENDING',
+                    type: 'RETURN', 
+                    originalInvoice: originalTx.invoiceNumber
+                };
+
+                const latestOrders = JSON.parse(localStorage.getItem(STORAGE_ONLINE_ORDERS)) || onlineOrders;
+                const updatedOrders = [pendingReturn, ...latestOrders];
+                
+                setOnlineOrders(updatedOrders);
+                localStorage.setItem(STORAGE_ONLINE_ORDERS, JSON.stringify(updatedOrders));
+
+                if (channelRef.current) {
+                    channelRef.current.postMessage({
+                        type: 'NEW_ONLINE_ORDER',
+                        payload: { onlineOrders: updatedOrders }
+                    });
+                }
+
+                alert("Return request sent! It is now pending approval by the store.");
+                setReturnModal({ isOpen: false, data: null, items: [] });
+            };
+
+            const handlePrintReceipt = () => {
+                window.print();
+            };
+
+            const filteredInventory = inventory.filter(item => 
+                item.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                item.category.toLowerCase().includes(searchQuery.toLowerCase())
+            );
+
+            // Calculate active cart totals for live display
+            const currentCartTotals = cart.map(item => {
+                const dbItem = inventory.find(i => i.id === item.id) || item;
+                const itemDiscount = dbItem.discount || 0;
+                const discountedPrice = dbItem.price * (1 - (itemDiscount / 100));
+                return { ...item, livePrice: discountedPrice, originalPrice: dbItem.price, discount: itemDiscount };
+            });
+            const cartSubtotal = currentCartTotals.reduce((sum, i) => sum + (i.livePrice * i.qty), 0);
+
+            const myPendingOrders = onlineOrders.filter(o => o.customerMobile === currentUser?.mobile);
+            const myCompletedOrders = transactions.filter(tx => tx.customerMobile === currentUser?.mobile);
+
+            if (!currentUser) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center p-4 bg-slate-900">
+                        <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-8">
+                            <div className="text-center mb-6">
+                                <span className="bg-amber-400 text-slate-900 font-black px-3 py-1 rounded text-xl italic inline-block mb-2">zippy</span>
+                                <h1 className="text-xl font-bold text-slate-800">Customer Shopping App</h1>
+                                <p className="text-xs text-slate-500 mt-1">Order groceries straight from the POS</p>
+                            </div>
+
+                            <div className="flex border-b mb-6">
+                                <button 
+                                    onClick={() => setAuthMode('login')} 
+                                    className={`flex-1 pb-2 text-sm font-bold ${authMode === 'login' ? 'border-b-2 border-amber-500 text-slate-900' : 'text-slate-400'}`}
+                                >Login</button>
+                                <button 
+                                    onClick={() => setAuthMode('signup')} 
+                                    className={`flex-1 pb-2 text-sm font-bold ${authMode === 'signup' ? 'border-b-2 border-amber-500 text-slate-900' : 'text-slate-400'}`}
+                                >Sign Up</button>
+                            </div>
+
+                            {authMode === 'login' ? (
+                                <form onSubmit={handleLogin} className="space-y-4">
+                                    <input type="tel" required placeholder="Mobile Number" value={loginForm.mobile} onChange={e => setLoginForm({...loginForm, mobile: e.target.value.replace(/\D/g, '')})} maxLength="10" className="w-full px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-amber-400 outline-none" />
+                                    <input type="password" required placeholder="Password" value={loginForm.password} onChange={e => setLoginForm({...loginForm, password: e.target.value})} className="w-full px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-amber-400 outline-none" />
+                                    <button type="submit" className="w-full py-3 bg-amber-400 hover:bg-amber-500 font-bold text-slate-900 rounded-lg shadow-md transition">Secure Login</button>
+                                </form>
+                            ) : (
+                                <form onSubmit={handleSignup} className="space-y-4">
+                                    <input type="text" required placeholder="Full Name" value={signupForm.name} onChange={e => setSignupForm({...signupForm, name: e.target.value})} className="w-full px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-amber-400 outline-none" />
+                                    <input type="tel" required placeholder="10-digit Mobile Number" value={signupForm.mobile} onChange={e => setSignupForm({...signupForm, mobile: e.target.value.replace(/\D/g, '')})} maxLength="10" className="w-full px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-amber-400 outline-none" />
+                                    <textarea required placeholder="Delivery Address" value={signupForm.address} onChange={e => setSignupForm({...signupForm, address: e.target.value})} className="w-full px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-amber-400 outline-none" rows="2"></textarea>
+                                    <input type="password" required placeholder="Create Password" value={signupForm.password} onChange={e => setSignupForm({...signupForm, password: e.target.value})} className="w-full px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-amber-400 outline-none" />
+                                    <button type="submit" className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-amber-400 font-bold rounded-lg shadow-md transition">Create Account</button>
+                                </form>
+                            )}
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen flex flex-col w-full bg-slate-50">
+                    <header className="bg-slate-900 text-white p-3 sticky top-0 z-40 shadow-md print:hidden">
+                        <div className="max-w-5xl mx-auto flex items-center justify-between">
+                            <div className="flex items-center space-x-2 cursor-pointer" onClick={() => setActiveView('shop')}>
+                                <span className="bg-amber-400 text-slate-900 font-black px-2 py-0.5 rounded text-lg italic">zippy</span>
+                                <span className="font-bold text-sm hidden sm:block">Fresh Delivered</span>
+                            </div>
+
+                            <div className="flex space-x-2 sm:space-x-4 items-center">
+                                <button onClick={() => setActiveView('shop')} className={`text-xs font-bold px-2 py-1.5 rounded ${activeView === 'shop' ? 'text-amber-400 bg-slate-800' : 'text-slate-300 hover:text-white'}`}>Shop</button>
+                                <button onClick={() => setActiveView('orders')} className={`text-xs font-bold px-2 py-1.5 rounded ${activeView === 'orders' ? 'text-amber-400 bg-slate-800' : 'text-slate-300 hover:text-white'}`}>My Orders</button>
+                                
+                                <button onClick={() => setActiveView('cart')} className="relative bg-amber-400 text-slate-900 px-3 py-1.5 rounded-lg text-xs font-black shadow flex items-center gap-1 hover:bg-amber-500 transition">
+                                    <span>🛒 Cart</span>
+                                    {cart.length > 0 && <span className="bg-red-500 text-white rounded-full px-1.5 text-[10px] ml-1">{cart.reduce((a,b)=>a+b.qty,0)}</span>}
+                                </button>
+                                
+                                <button onClick={handleLogout} className="text-[10px] text-slate-400 hover:text-white border border-slate-600 px-2 py-1 rounded">Logout</button>
+                            </div>
+                        </div>
+                    </header>
+
+                    <main className="max-w-5xl mx-auto w-full p-4 flex-1 print:hidden">
+                        
+                        {activeView === 'shop' && (
+                            <div className="space-y-4">
+                                <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                                    <h2 className="text-lg font-black text-slate-900 mb-2">Welcome back, {currentUser.name.split(' ')[0]}! 👋</h2>
+                                    <input 
+                                        type="text" 
+                                        placeholder="Search across 500 items..." 
+                                        value={searchQuery}
+                                        onChange={(e) => setSearchQuery(e.target.value)}
+                                        className="w-full px-4 py-2.5 bg-slate-50 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-400 outline-none"
+                                    />
+                                </div>
+
+                                {inventory.length === 0 ? (
+                                    <div className="text-center py-10 bg-white rounded-xl border border-slate-200">
+                                        <p className="text-slate-500 font-bold">Waiting for POS system to initialize inventory...</p>
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
+                                        {filteredInventory.map(item => {
+                                            const inCart = cart.find(c => c.id === item.id);
+                                            const itemDiscount = item.discount || 0;
+                                            const discountedPrice = item.price * (1 - (itemDiscount / 100));
+
+                                            return (
+                                                <div key={item.id} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col min-h-[140px]">
+                                                    <div className="p-3 flex-1 flex flex-col justify-between space-y-2">
+                                                        <div>
+                                                            <h3 className="font-bold text-sm text-slate-900 leading-tight line-clamp-2">{item.name}</h3>
+                                                            <p className="text-[10px] text-slate-500 mt-1">{item.category} • {item.unit}</p>
+                                                        </div>
+                                                        <div className="flex items-center justify-between mt-auto pt-2 border-t border-slate-50">
+                                                            <div>
+                                                                {itemDiscount > 0 ? (
+                                                                    <div className="flex flex-col">
+                                                                        <span className="line-through text-slate-400 text-[10px]">₹{item.price}</span>
+                                                                        <span className="font-black text-red-600">₹{discountedPrice.toFixed(2)}</span>
+                                                                    </div>
+                                                                ) : (
+                                                                    <span className="font-black text-slate-900">₹{item.price}</span>
+                                                                )}
+                                                            </div>
+                                                            
+                                                            {item.stock === 0 ? (
+                                                                <span className="text-[10px] font-bold text-red-500 bg-red-50 px-2 py-1 rounded">Out of Stock</span>
+                                                            ) : inCart ? (
+                                                                <div className="flex items-center bg-amber-100 rounded-lg overflow-hidden">
+                                                                    <button onClick={() => updateCartQty(item.id, -1)} className="px-2 py-1 font-bold text-amber-900 hover:bg-amber-200">-</button>
+                                                                    <span className="px-2 py-1 text-xs font-black text-amber-900">{inCart.qty}</span>
+                                                                    <button onClick={() => updateCartQty(item.id, 1)} className="px-2 py-1 font-bold text-amber-900 hover:bg-amber-200">+</button>
+                                                                </div>
+                                                            ) : (
+                                                                <button onClick={() => addToCart(item)} className="bg-slate-900 text-amber-400 text-xs font-bold px-3 py-1.5 rounded hover:bg-slate-800 transition">Add</button>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {activeView === 'cart' && (
+                            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                                <div className="p-4 border-b border-slate-100 bg-slate-50">
+                                    <h2 className="font-black text-lg text-slate-900">Your Shopping Cart</h2>
+                                </div>
+                                
+                                {cart.length === 0 ? (
+                                    <div className="p-8 text-center space-y-4">
+                                        <div className="text-4xl">🛒</div>
+                                        <p className="text-slate-500 font-bold">Your cart is empty.</p>
+                                        <button onClick={() => setActiveView('shop')} className="bg-amber-400 px-4 py-2 font-bold rounded-lg shadow hover:bg-amber-500 text-slate-900">Start Shopping</button>
+                                    </div>
+                                ) : (
+                                    <div className="p-4 space-y-4">
+                                        <div className="divide-y divide-slate-100">
+                                            {currentCartTotals.map(item => (
+                                                <div key={item.id} className="py-3 flex justify-between items-center">
+                                                    <div className="flex-1 pr-4">
+                                                        <h4 className="font-bold text-sm text-slate-900">{item.name}</h4>
+                                                        <p className="text-xs text-slate-500">
+                                                            ₹{item.livePrice.toFixed(2)} / {item.unit}
+                                                            {item.discount > 0 && <span className="text-red-500 ml-1 font-bold">(-{item.discount}%)</span>}
+                                                        </p>
+                                                    </div>
+                                                    <div className="flex items-center space-x-4">
+                                                        <div className="flex items-center border border-slate-200 rounded-lg overflow-hidden">
+                                                            <button onClick={() => updateCartQty(item.id, -1)} className="px-2.5 py-1 bg-slate-50 hover:bg-slate-100 font-bold text-slate-600">-</button>
+                                                            <span className="px-3 py-1 text-xs font-black bg-white">{item.qty}</span>
+                                                            <button onClick={() => updateCartQty(item.id, 1)} className="px-2.5 py-1 bg-slate-50 hover:bg-slate-100 font-bold text-slate-600">+</button>
+                                                        </div>
+                                                        <div className="w-16 text-right font-black text-sm text-slate-900">
+                                                            ₹{(item.livePrice * item.qty).toFixed(2)}
+                                                        </div>
+                                                        <button onClick={() => removeFromCart(item.id)} className="text-red-400 hover:text-red-600 text-lg">×</button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+
+                                        <div className="border-t border-slate-200 pt-4 bg-slate-50 p-4 rounded-lg space-y-2">
+                                            <div className="flex justify-between text-sm text-slate-600">
+                                                <span>Subtotal</span>
+                                                <span className="font-bold">₹{cartSubtotal.toFixed(2)}</span>
+                                            </div>
+                                            <div className="flex justify-between text-sm text-slate-600">
+                                                <span>Taxes & Fees (5%)</span>
+                                                <span className="font-bold">₹{(cartSubtotal * 0.05).toFixed(2)}</span>
+                                            </div>
+                                            <div className="border-t border-slate-300 my-2"></div>
+                                            <div className="flex justify-between text-lg font-black text-slate-900">
+                                                <span>Grand Total</span>
+                                                <span className="text-amber-600">₹{(cartSubtotal * 1.05).toFixed(2)}</span>
+                                            </div>
+                                            
+                                            <div className="text-xs text-slate-500 mt-2 mb-4 bg-white p-2 rounded border border-slate-200">
+                                                <strong>Delivery Address:</strong> {currentUser.address}
+                                            </div>
+
+                                            <button onClick={handleCheckout} className="w-full bg-slate-900 text-amber-400 font-black py-3 rounded-xl shadow hover:bg-slate-800 transition text-sm">
+                                                CONFIRM & PAY VIA UPI
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {activeView === 'orders' && (
+                            <div className="space-y-6">
+                                <div>
+                                    <h2 className="font-black text-lg text-slate-900 mb-3 flex items-center gap-2">
+                                        ⏳ Processing Orders
+                                        <span className="bg-amber-200 text-amber-900 text-[10px] px-2 py-0.5 rounded-full">{myPendingOrders.length}</span>
+                                    </h2>
+                                    {myPendingOrders.length === 0 ? (
+                                        <p className="text-sm text-slate-500 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">No active orders currently processing.</p>
+                                    ) : (
+                                        <div className="space-y-3">
+                                            {myPendingOrders.map(order => (
+                                                <div key={order.id} className={`bg-white border-l-4 ${order.type === 'RETURN' ? 'border-red-400' : 'border-amber-400'} rounded-r-xl p-4 shadow-sm border-y border-r border-slate-200`}>
+                                                    <div className="flex justify-between items-start mb-2">
+                                                        <div>
+                                                            <span className="text-xs font-bold text-slate-500 block">{order.type === 'RETURN' ? 'Return Request' : 'Order'} {order.id}</span>
+                                                            <span className="text-[10px] text-slate-400">{order.timestamp}</span>
+                                                        </div>
+                                                        <span className={`${order.type === 'RETURN' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'} text-[10px] font-bold px-2 py-1 rounded animate-pulse`}>
+                                                            {order.type === 'RETURN' ? 'Awaiting Approval' : 'Store is preparing'}
+                                                        </span>
+                                                    </div>
+                                                    <div className="text-xs text-slate-600 mb-3">
+                                                        {order.items.map(i => `${i.qty}x ${i.name}`).join(', ')}
+                                                    </div>
+                                                    <div className="flex justify-between items-center border-t pt-2">
+                                                        <span className="text-xs font-bold text-slate-500">{order.type === 'RETURN' ? 'Estimated Refund' : 'Amount Paid'}</span>
+                                                        <span className={`font-black ${order.type === 'RETURN' ? 'text-red-500' : 'text-slate-900'}`}>₹{Math.abs(order.grandTotal).toFixed(2)}</span>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div>
+                                    <h2 className="font-black text-lg text-slate-900 mb-3 flex items-center gap-2">
+                                        ✅ Past Orders
+                                    </h2>
+                                    {myCompletedOrders.length === 0 ? (
+                                        <p className="text-sm text-slate-500 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">Your order history is empty.</p>
+                                    ) : (
+                                        <div className="space-y-3">
+                                            {myCompletedOrders.map(tx => {
+                                                const returnableItems = getReturnableItems(tx);
+                                                const canReturn = tx.type !== 'RETURN' && returnableItems.length > 0;
+
+                                                return (
+                                                    <div key={tx.invoiceNumber} className="bg-white rounded-xl p-4 shadow-sm border border-slate-200 transition">
+                                                        <div className="flex justify-between items-start mb-2">
+                                                            <div>
+                                                                <span className="text-xs font-bold text-slate-500 block">Invoice {tx.invoiceNumber}</span>
+                                                                <span className="text-[10px] text-slate-400">{tx.timestamp}</span>
+                                                            </div>
+                                                            <span className={`text-[10px] font-bold px-2 py-1 rounded ${tx.type === 'RETURN' ? 'bg-red-100 text-red-800' : 'bg-emerald-100 text-emerald-800'}`}>
+                                                                {tx.type === 'RETURN' ? 'Returned / Refunded' : 'Delivered'}
+                                                            </span>
+                                                        </div>
+                                                        <div className="text-xs text-slate-600 mb-3 line-clamp-1">
+                                                            {tx.items.map(i => `${i.qty}x ${i.name}`).join(', ')}
+                                                        </div>
+                                                        <div className="flex justify-between items-center border-t border-slate-100 pt-3 mt-2">
+                                                            <div>
+                                                                <span className="text-xs font-bold text-slate-500 block">Total</span>
+                                                                <span className={`font-black ${tx.type === 'RETURN' ? 'text-red-500' : 'text-slate-900'}`}>
+                                                                    ₹{Math.abs(tx.grandTotal).toFixed(2)}
+                                                                </span>
+                                                            </div>
+                                                            <div className="flex gap-2">
+                                                                {canReturn && (
+                                                                    <button 
+                                                                        onClick={() => openReturnModal(tx, returnableItems)}
+                                                                        className="text-xs bg-red-100 text-red-600 px-3 py-1.5 rounded-lg font-bold hover:bg-red-200 transition shadow-sm"
+                                                                    >
+                                                                        🔄 Return Items
+                                                                    </button>
+                                                                )}
+                                                                <button 
+                                                                    onClick={() => setReceiptModal({ isOpen: true, data: tx })}
+                                                                    className="text-xs bg-slate-900 text-amber-400 px-3 py-1.5 rounded-lg font-bold hover:bg-slate-800 transition shadow-sm"
+                                                                >
+                                                                    📄 View Receipt
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                    </main>
+
+                    {returnModal.isOpen && returnModal.data && (
+                        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+                            <div className="bg-white rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-2xl max-h-[90vh] flex flex-col">
+                                <div className="border-b pb-3 flex justify-between items-center shrink-0">
+                                    <div>
+                                        <h3 className="font-black text-slate-900 text-lg flex items-center gap-2">
+                                            <span>📦</span> Return Items
+                                        </h3>
+                                        <p className="text-xs text-slate-500">Ref: {returnModal.data.invoiceNumber}</p>
+                                    </div>
+                                    <button 
+                                        onClick={() => setReturnModal({ isOpen: false, data: null, items: [] })} 
+                                        className="text-slate-400 hover:text-slate-600 font-bold text-xl px-2"
+                                    >
+                                        &times;
+                                    </button>
+                                </div>
+                                
+                                <div className="overflow-y-auto flex-1 space-y-3 pr-2">
+                                    <p className="text-xs font-bold text-slate-500 mb-2">Select the quantity of each item you wish to return:</p>
+                                    {returnModal.items.map(item => {
+                                        const itemDiscount = item.discount || 0;
+                                        const discountedPrice = item.price * (1 - (itemDiscount / 100));
+
+                                        return (
+                                            <div key={item.id} className={`flex justify-between items-center p-3 border rounded-lg transition ${item.returnQty > 0 ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'}`}>
+                                                <div>
+                                                    <h4 className="font-bold text-sm text-slate-900">{item.name}</h4>
+                                                    <p className="text-[10px] text-slate-500">Max Returnable: {item.qty} | ₹{discountedPrice.toFixed(2)}/ea</p>
+                                                </div>
+                                                <div className="flex items-center space-x-3">
+                                                    <div className="flex items-center border border-slate-300 rounded-lg overflow-hidden bg-white shadow-sm">
+                                                        <button 
+                                                            onClick={() => updateReturnQty(item.id, -1)} 
+                                                            disabled={item.returnQty <= 0}
+                                                            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 disabled:opacity-30 font-bold text-slate-700 transition"
+                                                        >
+                                                            -
+                                                        </button>
+                                                        <span className="px-3 py-1.5 text-sm font-black text-slate-900 w-8 text-center">{item.returnQty}</span>
+                                                        <button 
+                                                            onClick={() => updateReturnQty(item.id, 1)} 
+                                                            disabled={item.returnQty >= item.qty} 
+                                                            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 disabled:opacity-30 font-bold text-slate-700 transition"
+                                                        >
+                                                            +
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+
+                                <div className="border-t pt-4 shrink-0 space-y-3">
+                                    <div className="flex justify-between font-black text-lg text-slate-900">
+                                        <span>Estimated Refund:</span>
+                                        <span className="text-red-500">
+                                            ₹{(returnModal.items.reduce((sum, item) => {
+                                                const itemDiscount = item.discount || 0;
+                                                const discountedPrice = item.price * (1 - (itemDiscount / 100));
+                                                return sum + (discountedPrice * item.returnQty);
+                                            }, 0) * 1.05).toFixed(2)}
+                                        </span>
+                                    </div>
+                                    <button 
+                                        onClick={handleConfirmReturn} 
+                                        disabled={returnModal.items.every(i => i.returnQty === 0)}
+                                        className="w-full py-3 bg-red-500 hover:bg-red-600 disabled:bg-slate-300 disabled:text-slate-500 text-white font-black rounded-lg transition shadow-md"
+                                    >
+                                        Submit Return Request
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {receiptModal.isOpen && receiptModal.data && (
+                        <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center pt-10 pb-10 overflow-y-auto print:p-0 p-4">
+                            <div className="bg-white rounded-lg shadow-2xl relative w-full" style={{ maxWidth: '350px' }}>
+                                
+                                <div id="printable-receipt-area" className="w-full mx-auto bg-white">
+                                    <div className="thermal-receipt text-[11px] p-5 w-full mx-auto">
+                                        
+                                        <div className="text-center font-bold">
+                                            <h2 className="text-xl tracking-tight mb-1">ZIPPY SUPERMARKET</h2>
+                                            <p>123 Tech Park Road, Bengaluru</p>
+                                            <p>GSTIN: 29ABCDE1234F1Z5</p>
+                                            <p>Ph: 1800-123-4567</p>
+                                        </div>
+                                        
+                                        <div className="divider"></div>
+                                        
+                                        <div className="space-y-1">
+                                            <div className="flex justify-between">
+                                                <span>TERM: {receiptModal.data.terminalId}</span>
+                                                <span>CASHIER: {receiptModal.data.cashier.split(' ')[0].toUpperCase()}</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span>INV: {receiptModal.data.invoiceNumber}</span>
+                                                <span className="text-right">{receiptModal.data.timestamp}</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span>TYPE: {receiptModal.data.type}</span>
+                                                <span>MODE: {receiptModal.data.paymentMethod.toUpperCase()}</span>
+                                            </div>
+
+                                            {receiptModal.data.originalInvoice && (
+                                                <div className="flex justify-between font-bold">
+                                                    <span>ORIG REF:</span>
+                                                    <span>{receiptModal.data.originalInvoice}</span>
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        <div className="divider"></div>
+                                        
+                                        <div className="space-y-1">
+                                            <p>CUST: {receiptModal.data.customerName.toUpperCase()}</p>
+                                            {receiptModal.data.customerMobile && <p>MOB: {receiptModal.data.customerMobile}</p>}
+                                            {receiptModal.data.customerAddress && <p>ADD: {receiptModal.data.customerAddress.toUpperCase()}</p>}
+                                        </div>
+                                        <div className="divider"></div>
+
+                                        <table className="text-left w-full">
+                                            <thead>
+                                                <tr>
+                                                    <th className="w-1/2">ITEM</th>
+                                                    <th className="w-1/4 text-center">QTY</th>
+                                                    <th className="w-1/4 text-right">AMT</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {receiptModal.data.items.map((it, idx) => {
+                                                    const itemDiscount = it.discount || 0;
+                                                    const discountedPrice = it.price * (1 - (itemDiscount / 100));
+                                                    
+                                                    return (
+                                                        <tr key={idx}>
+                                                            <td>
+                                                                {it.name.toUpperCase()}
+                                                                {itemDiscount > 0 && ` (-${itemDiscount}%)`}
+                                                            </td>
+                                                            <td className="text-center">{it.qty}</td>
+                                                            <td className="text-right">{(discountedPrice * it.qty).toFixed(2)}</td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                        
+                                        <div className="divider"></div>
+                                        
+                                        <div className="space-y-1">
+                                            <div className="flex justify-between">
+                                                <span>SUBTOTAL:</span>
+                                                <span>{Math.abs(receiptModal.data.subtotal).toFixed(2)}</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span>CGST (2.5%):</span>
+                                                <span>{Math.abs(receiptModal.data.subtotal * 0.025).toFixed(2)}</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span>SGST (2.5%):</span>
+                                                <span>{Math.abs(receiptModal.data.subtotal * 0.025).toFixed(2)}</span>
+                                            </div>
+                                            <div className="divider"></div>
+                                            <div className="flex justify-between font-bold text-sm">
+                                                <span>{receiptModal.data.type === 'RETURN' ? 'TOTAL REFUND:' : 'GRAND TOTAL:'}</span>
+                                                <span>{Math.abs(receiptModal.data.grandTotal).toFixed(2)}</span>
+                                            </div>
+                                        </div>
+                                        
+                                        <div className="divider"></div>
+                                        
+                                        <div className="text-center mt-4">
+                                            <p className="font-black text-sm mb-2">*** CUSTOMER COPY ***</p>
+                                            <p className="font-bold">*** THANK YOU FOR SHOPPING ***</p>
+                                            <p className="mt-1">PLEASE VISIT US AGAIN</p>
+                                            
+                                            <div className="mt-4 flex flex-col items-center">
+                                                <div className="text-xl tracking-tighter" style={{ fontFamily: 'monospace' }}>
+                                                    || ||| | ||| || || | || ||
+                                                </div>
+                                                <div className="text-[9px] mt-1">{receiptModal.data.invoiceNumber}</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="flex gap-2 p-4 pt-2 border-t border-slate-200 no-print bg-white rounded-b-lg">
+                                    <button 
+                                        onClick={handlePrintReceipt} 
+                                        className="flex-1 py-2.5 bg-amber-400 hover:bg-amber-500 text-slate-900 font-bold text-xs rounded-lg shadow-sm transition"
+                                    >
+                                        🖨️ Print Receipt
+                                    </button>
+                                    <button 
+                                        onClick={() => setReceiptModal({ isOpen: false, data: null })} 
+                                        className="flex-1 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-lg shadow-sm transition"
+                                    >
+                                        Close Window
+                                    </button>
+                                </div>
+
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<CustomerApp />);
+    </script>
+</body>
+</html>
+
